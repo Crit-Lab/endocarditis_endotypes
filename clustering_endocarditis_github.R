@@ -665,10 +665,33 @@ for(i in 1:length(titulos)) {
 plot_grid(plotlist=lista, align="hv", nrow=4)
 
 
-#Outcome
+#Outcomes: Organ failures and survival
 
 library(survival)
 library(ggfortify)
+
+proplot<-function(complication, xlabel=NULL) {
+  df<-as.data.frame(complication)
+  df<-df[df$Var2==TRUE,]
+  ggplot(df, aes(x=Var1, y=Freq, fill=Var1))+
+    geom_col()+
+    theme(legend.position="none", aspect.ratio = 1.618)+
+    scale_fill_manual(values=clusters_colors)+
+    scale_y_continuous(limits=c(0,1), labels=scales::percent)+
+    scale_x_discrete(labels=c("EE1", "EE2"))+
+    labs(x=xlabel, y="Percentage")
+}
+complications<-list(
+  prop.table(table(samples$cluster, samples$comp_icc>0), margin=1) %>%
+    proplot("Cardiac failure"),
+  prop.table(table(samples$cluster, samples$comp_insufrenal>0), margin=1) %>%
+    proplot("Kidney failure"),
+  prop.table(table(samples$cluster, samples$comp_nrl>0), margin=1) %>%
+    proplot("Neurological complications"),
+  prop.table(table(samples$cluster, samples$comp_abd_hep>0), margin=1) %>% 
+    proplot("Liver failure"))
+
+plot_grid(plotlist=complications, ncol=2)
 
 clust_var <- as.factor(samples$cluster)
 qx<-as.factor(samples$qx>1)
