@@ -1,4 +1,4 @@
-#########CLUSTERING#########
+#########CLUSTERING ENDOCARDITIS#########
 
 # Carga de datos ----
 
@@ -717,6 +717,65 @@ autoplot(survfit(surv.icu~clust_var)[,3], conf.int = FALSE, surv.size=2,  ylim=c
 
 summary(survfit(surv.icu~clust_var), times=c(0,10,20,30, 40, 50, 60))
 model<-coxph(surv.icu~clust_var+edad+sexo, data=samples, id=nhc) 
+summary(model)
+
+exitus.table<-table(samples$cluster, samples$exitus)
+exitus.table
+prop.table(exitus.table, margin=1)
+fisher.test(exitus.table)
+
+
+#Differeces according to germs
+
+table(samples$ei_etiologia, samples$cluster)
+
+samples$malbicho<-samples$ei_etiologia %in% c(1,2,3,4,5)
+
+t<-table(samples$malbicho, samples$cluster)
+print(t)
+chisq.test(t)
+
+dds_bicho<-DESeqDataSetFromTximport(txi, colData = samples, design = ~malbicho)
+
+dim(dds_bicho)#34528
+keep<-rowSums(counts(dds_bicho)>0)>=10
+dds_bicho<-dds_bicho[keep,]
+dim(dds_bicho)#16772
+
+#DE-analysis
+dds_bicho<-DESeq(dds_bicho)
+genenames<-AnnotationDbi::select(edb, keys=rownames(dds_bicho), keytype = "GENEID", columns=c("SYMBOL", "GENEID") )
+rownames(dds_bicho)<-genenames$SYMBOL 
+
+#Results
+res_bicho<-results(dds_bicho, alpha=0.05)
+summary(res_bicho)
+resOrdered_bicho <- res_bicho[order(res_bicho$log2FoldChange),]
+sig.genes_bicho<-res_bicho[!is.na(res_bicho$padj) & res_bicho$padj<0.05,]
+res_bicho$gene <- rownames(res_bicho)
+
+t<-table(samples$exitus, samples$malbicho)
+print(t)
+chisq.test(t)
+
+surv.icu<-Surv(samples$follow_up, samples$exitus)
+
+autoplot(survfit(surv.icu~samples$malbicho)[,2], conf.int = FALSE, surv.size=2, ylim=c(0,1))+
+  scale_color_manual(values=c("indianred3", "purple4"))+
+  theme_gray(base_size = 24)+
+  theme(legend.position = "none")+
+  scale_x_continuous(breaks=c(0,10,20,30, 40, 50, 60))+
+  labs(x="Time (days)", y="Probability of hospital discharge alive")
+
+autoplot(survfit(surv.icu~samples$malbicho)[,3], conf.int = FALSE, surv.size=2,  ylim=c(0,1))+
+  scale_color_manual(values=c("indianred3", "purple4"))+
+  theme_gray(base_size = 24)+
+  theme(legend.position = "none")+
+  scale_x_continuous(breaks=c(0,10,20,30, 40, 50, 60))+
+  labs(x="Time (days)", y="Probability of death")
+
+summary(survfit(surv.icu~samples$malbicho), times=c(0,10,20,30, 40, 50, 60))
+model<-coxph(surv.icu~malbicho+edad+sexo, data=samples, id=nhc) 
 summary(model)
 
 exitus.table<-table(samples$cluster, samples$exitus)
