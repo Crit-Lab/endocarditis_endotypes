@@ -1,6 +1,5 @@
-#########CLUSTERING ENDOCARDITIS#########
 
-# Carga de datos ----
+######### Endocarditis endotypes #########
 
 library(DESeq2)
 library(pheatmap)
@@ -17,13 +16,34 @@ library(umap)
 library(factoextra)
 library(org.Hs.eg.db)
 
-#Colors:
+gm_mean <- function(x, na.rm=TRUE, zero.propagate = FALSE){
+  if(any(x < 0, na.rm = TRUE)){
+    return(NaN)
+  }
+  if(zero.propagate){
+    if(any(x == 0, na.rm = TRUE)){
+      return(0)
+    }
+    exp(mean(log(x), na.rm = na.rm))
+  }
+  if(length(x) == 0){
+    return(0)
+  } else {
+    exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x[x>0 & !is.na(x)]))
+  }
+}
+
+# Color palettes
 library(critcolors) #To install, use: devtools::install_github("cecilomar6/critcolors")
 cluster1<-"#486D87"
 cluster2<-"#FFB838"
 clusters_colors<-c(cluster1, cluster2)
 sig_colors<-critcolors(100)
 exp_colors<-colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(100)
+
+#########################################
+
+# Load data ####
 
 #Clinical data
 samples<-read_csv("anonimized_data.csv")
@@ -39,6 +59,8 @@ samples<-samples[samples$nhc %in% colnames(txi$abundance),]
 
 #Sorting clinical data
 samples<-samples[match(colnames(txi$abundance), samples$nhc),]
+
+# Clustering ####
 
 #Count matrix normalized 
 mat<-txi$abundance
@@ -66,12 +88,11 @@ rownames(mat.filter)<-genenames$SYMBOL
 #Distance matrices
 distance <- dist(t(mat.filter), method = "euclidean")
 
-
-# Creación de Clusters ----
-
 clusters <- hclust(distance, method = "ward.D") 
 
-#Hierarchical tree of the samples
+## Visualization ----
+
+### Hierarchical tree of the samples ----
 #K=2
 hc<-hcut(distance, k=2, hc.method="ward.D", hc_func = "hclust")
 fviz_dend(hc, 
@@ -92,7 +113,8 @@ table(clustercut,useNA="always")
 
 samples$cluster<-clustercut[match(samples$nhc, names(clustercut))]
 
-#UMAP ----
+
+### UMAP ----
 
 set.seed(789)
 my.umap <- umap::umap(t(mat.filter))
@@ -107,7 +129,7 @@ ggplot(dat, aes(x=V1,y=V2,col = clust))+
   labs(x="UMAP1", y="UMAP2")
 
 
-#Heatmap of genes used for clustering
+### Heatmap of genes used for clustering ----
 sc.mat.filter <- t(apply(X = mat.filter,MARGIN = 1,FUN = function(y){
   (y - mean(y))/sd(y)}))
 samples$colors<-clusters_colors[as.numeric(samples$cluster)]
@@ -129,7 +151,9 @@ pheatmap(sc.mat.filter,
          #border_color = "#979a9a",
          annotation_col = df)
 
-#Clinical data at admission
+
+# Clinical data at admission ####
+
 median_iqr<-function(x) {
   percentiles<-round(quantile(x, probs=c(0.25, 0.75), na.rm=TRUE),2)
   paste(round(median(x, na.rm=TRUE),2), " (", percentiles[1]," - ", percentiles[2],")", sep="")
@@ -189,13 +213,12 @@ for(i in qual) {
 
 #View(qual_results)
 
-
-
-
 #Surgery
 table(samples$qx, samples$cluster) #0: No indication; 1: Not done; 2: Scheduled; 3: Urgent; 4: Emergent
 
-#Differential expression
+
+# Differential expression ####
+
 dds_cluster<-DESeqDataSetFromTximport(txi, colData = samples, design = ~cluster) 
 
 #Prefiltering
@@ -216,14 +239,90 @@ plotDispEsts(dds_cluster)
 res<-results(dds_cluster, alpha=0.05)
 summary(res)
 resOrdered_cluster <- res[order(res$log2FoldChange),]
-sig.genes<-res[!is.na(res$padj) & res$padj<0.01,]
+sig.genes<-res[!is.na(res$padj) & res$padj<0.00001,]
 res$gene <- rownames(res)
-
 genes<-as.data.frame(res)
 genes$genename<-rownames(genes)
 
+### Heatmap of DE genes ----
+mat.filter<-counts(dds_cluster)[rownames(dds_cluster) %in% rownames(sig.genes),]
+sc.mat.filter <- t(apply(X = mat.filter,MARGIN = 1,FUN = function(y){
+  (y - mean(y))/sd(y)}))
+dim(sc.mat.filter)
+samples$colors<-clusters_colors[as.numeric(samples$cluster)]
 
-#GSEA between clusters
+df <- data.frame(samples$cluster)
+colnames(df)[1] <- "Cluster"
+rownames(df)<-colnames(mat)
+
+pheatmap(sc.mat.filter,
+         #fontsize = 4,
+         cellwidth = 4,
+         cellheight = 0.2,
+         clustering_method="ward.D",
+         cluster_cols=TRUE,
+         cluster_rows = TRUE,
+         show_rownames = F,
+         show_colnames = F,
+         annotation_colors=list(Cluster=c("1"=clusters_colors[1], "2"=clusters_colors[2])),
+         #border_color = "#979a9a",
+         annotation_col = df)
+
+## Cluster signature ----
+
+res_stat <- res[order(abs(res$stat), decreasing = TRUE),]
+sign <- res_stat$log2FoldChange[1:10]
+names(sign) <- rownames(res_stat)[1:10]
+# top 10 genes whit highest absolute statistical value.
+
+countmatrix <- counts(dds_cluster, normalized=TRUE)
+countmatrix <- countmatrix[rownames(countmatrix) %in% names(sign), ]
+
+
+### Heatmap of signature genes in endocarditis ----
+mat.filter<-counts(dds_cluster)[rownames(dds_cluster) %in% rownames(sig.genes),]
+sc.mat.filter <- t(apply(X = countmatrix,MARGIN = 1,FUN = function(y){
+  (y - mean(y))/sd(y)}))
+dim(sc.mat.filter)
+samples$colors<-clusters_colors[as.numeric(samples$cluster)]
+
+df <- data.frame(samples$cluster)
+colnames(df)[1] <- "Cluster"
+rownames(df)<-colnames(mat)
+
+pheatmap(sc.mat.filter,
+         #fontsize = 4,
+         cellwidth = 8,
+         cellheight = 8,
+         clustering_method="ward.D",
+         cluster_cols=TRUE,
+         cluster_rows = TRUE,
+         show_rownames = T,
+         show_colnames = F,
+         annotation_colors=list(Cluster=c("1"=clusters_colors[1], "2"=clusters_colors[2])),
+         #border_color = "#979a9a",
+         annotation_col = df)
+
+#Transcriptomic score
+samples$score <- apply(countmatrix, 2, FUN = gm_mean)
+
+score_internal<-ggplot(samples, aes(x = cluster, y = score, fill = cluster, color = cluster))+
+  geom_violin(alpha = 0.5, linewidth = 0)+
+  geom_jitter()+
+  geom_hline(yintercept = 50, linetype = 2, color = "indianred")+
+  theme_grey(base_size=16)+
+  theme(aspect.ratio = 1.62,
+        legend.position = "none")+
+  scale_fill_manual(values = clusters_colors)+
+  scale_color_manual(values = clusters_colors)+
+  scale_y_continuous(breaks = c(0, 50, 100,150, 200, 250))+
+  labs(x=NULL, title="External cohort", subtitle="p<0.001")
+    
+# Threshold set at 50
+
+
+## Gene Set Enrichment ----
+
 dds_gsea<-DESeqDataSetFromTximport(txi, colData = samples, design = ~cluster) 
 keep<-rowSums(counts(dds_gsea)>0)>=10
 dds_gsea<-dds_gsea[keep,]
@@ -238,8 +337,6 @@ gene_list<-na.omit(original_gene_list)
 
 #sort gene list in decreasing order (required for clusterProfiler)
 gene_list<-sort(gene_list, decreasing = T)
-
-## Gene Set Enrichment ----
 
 set.seed(789)
 gse_dx<-gseGO(geneList = gene_list,
@@ -265,6 +362,20 @@ dotplot(gse_dx,
         split=".sign", font.size=9, label_format=100)+
   facet_grid(.~.sign)+
   theme(aspect.ratio = 2.5)
+
+non_redundant_down<-c("GO:0033141","GO:0050911", "GO:0002323", "GO:0031424", "GO:0007187", "GO:0016339")
+non_redundant_up<-c("GO:0043383", "GO:0002666", "GO:0090646", "GO:1904507", "GO:0035025", "GO:0007031" )
+
+dotplot(gse_dx,
+        showCategory= gse_dx@result$Description[gse_dx@result$ID %in% c(non_redundant_down, non_redundant_up)],
+        split=".sign", font.size=9, label_format=100)+
+  facet_grid(.~.sign)+
+  scale_fill_gradientn(colours = sig_colors,
+                        trans="log",
+                        limits= c(1e-8, 0.05), 
+                        breaks=c(1e-8,1e-5, 1e-3, 0.05) ) 
+  theme(aspect.ratio = 2.5)
+
 
 library(enrichplot)
 treeplot(enrichplot::pairwise_termsim(gse_dx),
@@ -309,25 +420,32 @@ ggplot(genes, aes(x = log2FoldChange, y = -log10(padj))) +
                                                          0.24*(genes$padj>0.01)+
                                                          0.75*(rownames(genes) %in% c(go_labels_genes_stat, go_labels_genes_tcell)))) +
   geom_hline(yintercept = -log10(0.01), linetype=2)+
+  #scale_color_manual(values=c(sig_colors[100],"red", "grey75"))+
   theme_light(base_size = 24) + 
   theme(legend.position = "none")+
   geom_text_repel(
     data = genes[(genes$genename %in% go_labels_genes_stat) & genes$padj<0.01,],
     aes(label = genename),
     size = 4,
+    #color="#486D87",
+    #box.padding = unit(0.3, "lines"),
     point.padding = unit(2, "lines"),
     max.overlaps=50)+
   geom_text_repel(
     data = genes[(genes$genename %in% go_labels_genes_tcell) & genes$padj<0.0001,],
     aes(label = genename),
     size = 4,
+    #color="#FFB838",
+    #box.padding = unit(0.3, "lines"),
     point.padding = unit(2, "lines"),
     max.overlaps=50)+
   xlim(-4, 4)+
   theme(aspect.ratio = 1/1.618)+
   scale_color_manual(values=c("#07044BFF", "#486D87", "#FFB838", "lightgrey"))
 
-#Deconvolution
+
+# Deconvolution ####
+
 library(MetaIntegrator)
 library(data.table)
 library(dplyr)
@@ -419,13 +537,13 @@ summary(samples2$delay)
 aggregate(samples2$delay~samples2$cluster, FUN=summary)
 wilcox.test(samples2$delay~samples2$cluster)
 
-txi<-readRDS("transcripts_qx_github.rds")
+txi<-readRDS("transcript_qx_github.rds")
 
 #Sorting clinical data
 samples2<-samples2[match(colnames(txi$abundance), samples2$samples_name),]
 samples2$condition<-factor(samples2$condition, levels=c("pre_qx", "post_qx"))
 
-samples_cluster1 <- samples2 %>% filter(cluster == 1)
+trsamples_cluster1 <- samples2 %>% filter(cluster == 1)
 samples_cluster1$condition
 rownames(samples_cluster1) <- samples_cluster1$samples_name
 
@@ -580,6 +698,16 @@ ggplot(go_of_interest[go_of_interest$ID %in% divergent_go_simple,], aes(x = enri
                         breaks=c(1e-8,1e-5, 1e-3, 0.05) ) +
   labs(size="Number of genes", color="Adjusted p value")
 
+ggplot(go_of_interest[!go_of_interest$ID %in% divergent_go,], aes(x = enrichmentScore, y = Description, color = p.adjust, size = setSize))+
+  geom_point()+
+  geom_vline(xintercept=0, linetype=2)+
+  theme_dose(font.size=12)+
+  facet_wrap(~ETP)+
+  scale_color_gradientn(colours = sig_colors,
+                        trans="log",
+                        limits= c(1e-8, 0.05), 
+                        breaks=c(1e-8,1e-5, 1e-3, 0.05) ) +
+  labs(size="Number of genes", color="Adjusted p value")
 
 #Cell deconvolution by cluster and surgery
 
@@ -588,6 +716,7 @@ dds_cluster<-DESeqDataSetFromTximport(txi, colData = samples2, design = ~cluster
 
 genenames<-AnnotationDbi::select(edb, keys=rownames(dds_cluster), keytype = "GENEID", columns=c("SYMBOL", "GENEID") )
 rownames(dds_cluster)<-genenames$SYMBOL 
+
 
 dds_cluster<-estimateSizeFactors(dds_cluster)
 bulk<-counts(dds_cluster, normalized=T) #Counts matrix (with annotate's genes)
@@ -616,6 +745,10 @@ outDT_scaled<-as.data.frame(t(apply(outDT_scaled,1, FUN=function(x) x/sum(x))))
 rowSums(outDT_scaled)
 
 samples2_cells<-cbind(samples2, outDT_scaled[match(samples2$samples_name, outDT$rn),])
+
+ggplot(samples2_cells, aes(x=condition, y=neutrophil, col=cluster, fill=cluster))+
+  geom_boxplot(alpha=0.3)+
+  geom_jitter(width=0.1)
 
 cyto_plot_qx<-function(celltype, titulo, subtitulo) {
   cytoquine<-as.numeric(outDT_scaled[[celltype]])
@@ -665,33 +798,10 @@ for(i in 1:length(titulos)) {
 plot_grid(plotlist=lista, align="hv", nrow=4)
 
 
-#Outcomes: Organ failures and survival
+# Outcomes ####
 
 library(survival)
 library(ggfortify)
-
-proplot<-function(complication, xlabel=NULL) {
-  df<-as.data.frame(complication)
-  df<-df[df$Var2==TRUE,]
-  ggplot(df, aes(x=Var1, y=Freq, fill=Var1))+
-    geom_col()+
-    theme(legend.position="none", aspect.ratio = 1.618)+
-    scale_fill_manual(values=clusters_colors)+
-    scale_y_continuous(limits=c(0,1), labels=scales::percent)+
-    scale_x_discrete(labels=c("EE1", "EE2"))+
-    labs(x=xlabel, y="Percentage")
-}
-complications<-list(
-  prop.table(table(samples$cluster, samples$comp_icc>0), margin=1) %>%
-    proplot("Cardiac failure"),
-  prop.table(table(samples$cluster, samples$comp_insufrenal>0), margin=1) %>%
-    proplot("Kidney failure"),
-  prop.table(table(samples$cluster, samples$comp_nrl>0), margin=1) %>%
-    proplot("Neurological complications"),
-  prop.table(table(samples$cluster, samples$comp_abd_hep>0), margin=1) %>% 
-    proplot("Liver failure"))
-
-plot_grid(plotlist=complications, ncol=2)
 
 clust_var <- as.factor(samples$cluster)
 qx<-as.factor(samples$qx>1)
@@ -716,7 +826,7 @@ autoplot(survfit(surv.icu~clust_var)[,3], conf.int = FALSE, surv.size=2,  ylim=c
   labs(x="Time (days)", y="Probability of death")
 
 summary(survfit(surv.icu~clust_var), times=c(0,10,20,30, 40, 50, 60))
-model<-coxph(surv.icu~clust_var+edad+sexo, data=samples, id=nhc) 
+model<-coxph(surv.icu~clust_var+edad+sexo+as.factor(ei_etiologia %in% c(1,3))+as.factor(ei_tipo==1), data=samples, id=nhc) 
 summary(model)
 
 exitus.table<-table(samples$cluster, samples$exitus)
@@ -724,64 +834,190 @@ exitus.table
 prop.table(exitus.table, margin=1)
 fisher.test(exitus.table)
 
-
-#Differeces according to germs
-
-table(samples$ei_etiologia, samples$cluster)
-
-samples$malbicho<-samples$ei_etiologia %in% c(1,2,3,4,5)
-
-t<-table(samples$malbicho, samples$cluster)
+t<-table(samples$exitus==1, samples$qx>1, samples$cluster)
 print(t)
-chisq.test(t)
+fisher.test(t[,,1])
+chisq.test(t[,,2])
 
-dds_bicho<-DESeqDataSetFromTximport(txi, colData = samples, design = ~malbicho)
 
-dim(dds_bicho)#34528
-keep<-rowSums(counts(dds_bicho)>0)>=10
-dds_bicho<-dds_bicho[keep,]
-dim(dds_bicho)#16772
+# Cluster validation in COVID-19 cohort ####
 
-#DE-analysis
-dds_bicho<-DESeq(dds_bicho)
-genenames<-AnnotationDbi::select(edb, keys=rownames(dds_bicho), keytype = "GENEID", columns=c("SYMBOL", "GENEID") )
-rownames(dds_bicho)<-genenames$SYMBOL 
+## Loading sample info and transcript data ----
 
-#Results
-res_bicho<-results(dds_bicho, alpha=0.05)
-summary(res_bicho)
-resOrdered_bicho <- res_bicho[order(res_bicho$log2FoldChange),]
-sig.genes_bicho<-res_bicho[!is.na(res_bicho$padj) & res_bicho$padj<0.05,]
-res_bicho$gene <- rownames(res_bicho)
+load("transcript_data_covid.RData")
+covid_samples <- read.csv("clinical_data_covid.csv")
+covid_samples <- covid_samples[match(colnames(txi$abundance), covid_samples$id ),] 
 
-t<-table(samples$exitus, samples$malbicho)
-print(t)
-chisq.test(t)
+## Normalizing counts using DESeq2 ----
 
-surv.icu<-Surv(samples$follow_up, samples$exitus)
+ddsTxi <- DESeqDataSetFromTximport(txi, colData = covid_samples, design = ~1)
+keep <- rowSums(counts(ddsTxi))>=ncol(ddsTxi)
+ddsTxi <- ddsTxi[keep,]
+dds <- DESeq(ddsTxi)
+genenames <- AnnotationDbi::select(edb, keys=rownames(dds), keytype = "GENEID", columns=c("SYMBOL", "GENEID") )
+rownames(dds) <- genenames$SYMBOL  
 
-autoplot(survfit(surv.icu~samples$malbicho)[,2], conf.int = FALSE, surv.size=2, ylim=c(0,1))+
-  scale_color_manual(values=c("indianred3", "purple4"))+
+## Calculating scores ----
+# Using the endo signature
+#Scores
+countmatrix <- counts(dds, normalized=TRUE)
+countmatrix <- countmatrix[rownames(countmatrix) %in% names(sign), ]
+covid_samples$score <- apply(countmatrix, 2, FUN = gm_mean)
+covid_samples$clust <- as.factor((covid_samples$score<50)+1)
+table(covid_samples$clust)
+covid_samples$colors<-clusters_colors[as.numeric(covid_samples$clust)]
+
+### Heatmap of signature genes in covid ----
+countmatrix_raw <- counts(dds)
+countmatrix_raw <- countmatrix_raw[rownames(countmatrix_raw) %in% names(sign), ]
+sc.mat.filter <- t(apply(X = countmatrix_raw,MARGIN = 1,FUN = function(y){
+  (y - mean(y))/sd(y)}))
+dim(sc.mat.filter)
+
+df <- data.frame(covid_samples$clust)
+colnames(df)[1] <- "Cluster"
+rownames(df)<-colnames(countmatrix)
+
+pheatmap(sc.mat.filter[, order(covid_samples$clust, decreasing=TRUE )],
+         #fontsize = 4,
+         cellwidth = 8,
+         cellheight = 8,
+         clustering_method="ward.D",
+         cluster_cols=FALSE,
+         cluster_rows = TRUE,
+         show_rownames = T,
+         show_colnames = F,
+         annotation_colors=list(Cluster=c("1"=clusters_colors[1], "2"=clusters_colors[2])),
+         #border_color = "#979a9a",
+         annotation_col = df)
+
+
+
+score_external<-ggplot(covid_samples, aes(x = clust, y = score, fill = clust, color = clust))+
+  geom_violin(alpha = 0.5, linewidth = 0)+
+  geom_jitter()+
+  geom_hline(yintercept = 50, linetype = 2, color = "indianred")+
+  theme_grey(base_size=16)+
+  theme(aspect.ratio = 1.62,
+        legend.position = "none")+
+  scale_fill_manual(values = clusters_colors)+
+  scale_color_manual(values = clusters_colors)+
+  scale_y_continuous(breaks = c(50, 200, 400, 600))+
+  scale_x_discrete(labels = c("1", "2"))+
+  labs(x=NULL, title="External cohort", subtitle="p<0.001")
+
+
+## Outcomes ----
+library(survival)
+library(ggfortify)
+
+clust_var <- as.factor(covid_samples$clust)
+covid_samples$icu_mort[is.na(covid_samples$icu_mort)]<-"-"
+table(covid_samples$icu_mort, clust_var, useNA = "always")
+covid_samples$icu_mort<-factor(covid_samples$icu_mort, levels=c("-", "0", "1"))
+table(covid_samples$icu_mort)
+
+covid.surv.icu<-Surv(covid_samples$follow_up.icu, covid_samples$icu_mort)
+autoplot(survfit(covid.surv.icu~clust_var)[,2], conf.int = FALSE, surv.size=2)+
   theme_gray(base_size = 24)+
-  theme(legend.position = "none")+
-  scale_x_continuous(breaks=c(0,10,20,30, 40, 50, 60))+
-  labs(x="Time (days)", y="Probability of hospital discharge alive")
+  theme(aspect.ratio = 1/1.618, legend.box.background = element_rect(), legend.position = c(0.85,0.25))+
+  labs(x="Time (days)", y="ICU survival", col="Cluster")+
+  scale_color_manual(values = clusters_colors, labels=c("1", "2") )
 
-autoplot(survfit(surv.icu~samples$malbicho)[,3], conf.int = FALSE, surv.size=2,  ylim=c(0,1))+
-  scale_color_manual(values=c("indianred3", "purple4"))+
+autoplot(survfit(covid.surv.icu~clust_var)[,3], conf.int = FALSE, surv.size=2)+
   theme_gray(base_size = 24)+
-  theme(legend.position = "none")+
-  scale_x_continuous(breaks=c(0,10,20,30, 40, 50, 60))+
-  labs(x="Time (days)", y="Probability of death")
+  theme(aspect.ratio = 1/1.618, legend.box.background = element_rect(), legend.position = c(0.85,0.25))+
+  labs(x="Time (days)", y="ICU death", col="Cluster")+
+  scale_color_manual(values = clusters_colors, labels=c("1", "2") )
 
-summary(survfit(surv.icu~samples$malbicho), times=c(0,10,20,30, 40, 50, 60))
-model<-coxph(surv.icu~malbicho+edad+sexo, data=samples, id=nhc) 
+summary(survfit(covid.surv.icu~clust_var), times=c(0,25,50,75,100,125,150))
+model<-coxph(covid.surv.icu~clust_var+age+sex+intubated, data=covid_samples, id=id) 
 summary(model)
 
-exitus.table<-table(samples$cluster, samples$exitus)
-exitus.table
-prop.table(exitus.table, margin=1)
-fisher.test(exitus.table)
+
+## Deconvolution ----
+
+library(cowplot)
+library(MetaIntegrator)
+library(data.table)
+library(dplyr)
+
+#Deconvolution of RNAseq samples using Immunostates
+immunoStatesMatrix2<-immunoStatesMatrix[,!colnames(immunoStatesMatrix) %in% c("MAST_cell", "macrophage_m0", "macrophage_m1", "macrophage_m2")]
+testRNA<-counts(dds, normalized=TRUE)
+
+sum(rownames(testRNA) %in% rownames(immunoStatesMatrix)) #Out of 293 genes in immunoStatesMatrix
+testRNA<-testRNA[rownames(testRNA) %in% rownames(immunoStatesMatrix),]
+
+#collapse unique genes
+testRNA<- rowsum(testRNA, rownames(testRNA))
+
+#Immunostates on the expression matrix
+outDT <- as.data.table(MetaIntegrator:::iSdeconvolution(immunoStatesMatrix2, 
+                                                        testRNA), keep.rownames = T)
+
+outDT[,natural_killer_cell:=CD56bright_natural_killer_cell+CD56dim_natural_killer_cell]
+outDT[,           monocyte:=CD14_positive_monocyte+CD16_positive_monocyte]
+outDT[,             B_cell:=naive_B_cell+memory_B_cell]
+outDT[,             T_cell:=CD8_positive_alpha_beta_T_cell+CD4_positive_alpha_beta_T_cell+gamma_delta_T_cell]
+outDT[,        granulocyte:=neutrophil+eosinophil+basophil]
+outDT[, lymp:=B_cell+T_cell]
+
+#Cleaning and re-scaling
+cytokines<-colnames(outDT)[2:17]
+keep<-apply(outDT[,2:17],2, function(x) sum(x>0)>10) #Only cell populations present in more than 10 samples
+cytokines<-cytokines[keep]
+cytokines<-cytokines[c(1,9,5,6,
+                       2,4,7,8,
+                       10,3,11)] #Reordering
+
+outDT_scaled<-as.data.frame(outDT)
+outDT_scaled<-outDT_scaled[,cytokines]
+outDT_scaled<-as.data.frame(t(apply(outDT_scaled,1, FUN=function(x) x/sum(x))))
+rowSums(outDT_scaled)
+
+
+#Stats and Plotting
+
+pcalc<-function(x) {
+  wt<-wilcox.test(as.numeric(x)~as.factor(covid_samples$clust))
+  return(round(wt$p.value, 3))
+}
+
+p_val<-apply(outDT_scaled, 2, pcalc)
+p_val<-paste("p=", p_val, sep="")
+p_val[p_val=="p=0"]<-"p<0.001"
+p_val<-as.factor(p_val)
+
+cyto_plot<-function(celltype, titulo, subtitulo) {
+  cytoquine<-as.numeric(outDT_scaled[[celltype]])
+  genot<-as.factor(covid_samples$clust)
+  ggplot(NULL, aes(y=cytoquine, x=genot, col=genot, fill=genot))+
+    geom_boxplot(width=0.5, outlier.shape=NA, alpha=0.3)+
+    geom_jitter()+
+    theme_grey(base_size = 16)+
+    theme(aspect.ratio=1.618, axis.text.x = element_text(angle=45, hjust = 1), legend.position="none", 
+          strip.background = element_rect(colour=NA, fill=NA), strip.text=element_text(colour="black"))+
+    labs(x=NULL, y=NULL, title=titulo)+
+    #scale_x_discrete(labels=c("CTP1", "CTP2"))+
+    scale_y_continuous(labels=scales::percent)+
+    scale_color_manual(values=clusters_colors)+
+    scale_fill_manual(values=clusters_colors)+
+    facet_wrap(subtitulo)
+}
+
+titulos<-cytokines
+
+lista<-list()
+for(i in 1:length(cytokines)) {
+  lista[[i]]<-cyto_plot(cytokines[[i]], titulos[[i]], p_val[[i]])
+  #ggsave(filename=paste(titulos[[i]],".pdf", sep=""), plot=lista[[i]])
+}
+lista[[12]]<-score_internal
+lista[[13]]<-score_external
+plot_grid(plotlist=lista[c(12, 13,2,5,6)],axis="lb", align="hv", nrow=1)
+
+
 
 
 
